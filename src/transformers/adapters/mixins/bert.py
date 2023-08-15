@@ -23,6 +23,18 @@ class BertSelfOutputAdaptersMixin(AdapterLayer):
     def __init__(self):
         super().__init__("mh_adapter", None)
 
+# probably not the right thing to do 
+class BertSelfOutputLinearAdaptersMixin(LinearAdapterLayer):
+    """Adds adapters to the BertSelfOutput module."""
+
+    def __init__(self):
+        super().__init__("mh_adapter", None, None,
+        None,
+        None,
+        None,
+        None)
+
+
 
 # For backwards compatibility, BertOutput inherits directly from AdapterLayer
 class BertOutputAdaptersMixin(AdapterLayer):
@@ -31,6 +43,17 @@ class BertOutputAdaptersMixin(AdapterLayer):
     def __init__(self):
         super().__init__("output_adapter", None)
 
+# TO CHECK
+class BertOutputLinearAdaptersMixin(LinearAdapterLayer):
+    """Adds adapters to the BertOutput module."""
+
+    def __init__(self):
+        super().__init__("output_adapter", None, None,
+        None,
+        None,
+        None,
+        None
+        )
 
 class BertModelAdaptersMixin(EmbeddingAdaptersMixin, InvertibleAdaptersMixin, ModelAdaptersMixin):
     """Adds adapters to the BertModel module."""

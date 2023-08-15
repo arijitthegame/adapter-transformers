@@ -19,14 +19,13 @@ from .configuration import (
 )
 from .context import AdapterSetup, ForwardContext
 from .hub_mixin import PushAdapterToHubMixin
-from .layer import AdapterLayer, AdapterLayerBase
+from .layer import AdapterLayer, AdapterLayerBase, LinearAdapterLayer
 from .loading import AdapterFusionLoader, AdapterLoader, PredictionHeadLoader, WeightsLoader
 from .lora import LoRALayer
-from .modeling import Adapter, GLOWCouplingBlock, NICECouplingBlock, init_shared_parameters
+from .modeling import Adapter, GLOWCouplingBlock, NICECouplingBlock, init_shared_parameters, LinearAdapter
 from .prefix_tuning import PrefixTuningPool, PrefixTuningShim
 from .utils import EMBEDDING_FILE, TOKENIZER_PATH, inherit_doc
 from .wrappers.configuration import SUBMODEL_NAMES, wrap_config
-
 
 logger = logging.getLogger(__name__)
 

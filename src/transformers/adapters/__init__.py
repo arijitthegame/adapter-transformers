@@ -58,6 +58,7 @@ _import_structure = {
         "PrefixTuningConfig",
         "StaticAdapterFusionConfig",
         "UniPELTConfig",
+        "NNKConfig",
     ],
     "context": [
         "AdapterSetup",
@@ -78,7 +79,7 @@ _import_structure = {
         "Seq2SeqLMHead",
         "TaggingHead",
     ],
-    "layer": ["AdapterLayer", "AdapterLayerBase"],
+    "layer": ["AdapterLayer", "AdapterLayerBase", "LinearAdapterLayer"],
     "model_mixin": [
         "EmbeddingAdaptersMixin",
         "InvertibleAdaptersMixin",
@@ -171,6 +172,7 @@ if TYPE_CHECKING:
         ConfigUnion,
         DynamicAdapterFusionConfig,
         HoulsbyConfig,
+        NNKConfig,
         HoulsbyInvConfig,
         IA3Config,
         LoRAConfig,
@@ -199,7 +201,7 @@ if TYPE_CHECKING:
         Seq2SeqLMHead,
         TaggingHead,
     )
-    from .layer import AdapterLayer, AdapterLayerBase
+    from .layer import AdapterLayer, AdapterLayerBase, LinearAdapterLayer
     from .model_mixin import (
         EmbeddingAdaptersMixin,
         InvertibleAdaptersMixin,

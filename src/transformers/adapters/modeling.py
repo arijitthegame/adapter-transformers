@@ -798,3 +798,271 @@ def init_W(config, W_left=None, W_right=None, W=None):
                 W.data[i].normal_(mean=0, std=config["phm_init_range"])
     else:
         raise ValueError
+
+def torch_apply_along_axis(function, x, axis: int = 0):
+    """
+    Torch equivalent of numpy apply along axis. This function is slow and should be avoided
+    https://discuss.pytorch.org/t/apply-a-function-along-an-axis/130440
+    """
+    return torch.stack([
+        function(x_i) for x_i in torch.unbind(x, dim=axis)
+    ], dim=axis)
+
+
+def input_to_rfs_torch_vectorized(xw, AB_fun, ab_fun, xis, num_rfs, dim, device, seed=0):
+    ab_coeffs = torch_apply_along_axis(ab_fun, xis, 0)
+    AB_coeffs = torch_apply_along_axis(AB_fun, xis, 0)
+    torch.manual_seed(seed)
+    if device == 'cpu':
+      gs = torch.rand(size=(num_rfs, dim))
+    else :
+      gs = torch.rand(size=(num_rfs, dim)).cuda()
+    renorm_gs = (ab_coeffs * gs.t()).t()
+    # print('gs',renorm_gs.shape)
+    # print('xw', xw.shape)
+    if len(xw.shape) == 2 :
+      dot_products = torch.einsum('ij,jk->ik', xw, renorm_gs.t())
+    elif len(xw.shape) == 3:
+      dot_products = torch.einsum('bij,jk->bik', xw, renorm_gs.t())
+    else :
+      raise ValueError("Unsuported Tensor shape")
+    squared_xw = torch.sum(torch.mul(xw, xw), dim=-1) #do not keepdims here
+    if len(squared_xw.shape) == 1 :
+      correction_vector = torch.outer(squared_xw / 2, torch.mul(ab_coeffs, ab_coeffs))
+    elif len(squared_xw.shape) == 2 :
+      correction_vector = torch.einsum('pq, r->pqr', squared_xw, torch.mul(ab_coeffs, ab_coeffs))
+    else :
+      raise ValueError("Unsupported tensor shape of xw")
+    diff_vector = dot_products - correction_vector
+    return (1.0 / math.sqrt(num_rfs)) * AB_coeffs * torch.exp(diff_vector)
+
+
+class NNK(nn.Module) :
+  def __init__(self, input_weights, A_fun, a_fun, xis, num_rfs, dim, model_device, seed=0):
+        super().__init__()
+        self.input_weights = input_weights
+        self.A_fun = A_fun
+        self.a_fun = a_fun
+        self.xis = xis
+        self.num_rfs = num_rfs
+        self.dim = dim
+        self.model_device = model_device
+        self.seed = seed
+
+        self.weights = input_to_rfs_torch_vectorized(self.input_weights, self.A_fun, self.a_fun, self.xis, self.num_rfs, self.dim, self.model_device, self.seed)
+        self.weights = nn.Parameter(self.weights)
+        # TODO: ADD BIAS
+
+  def forward(self, x):
+        output_x = input_to_rfs_torch_vectorized(x, self.A_fun, self.a_fun, self.xis, self.num_rfs, self.dim, self.model_device, self.seed)
+        return output_x @ self.weights.t()
+
+
+class LinearAdapter(nn.Module):
+  def __init__(
+        self,
+        adapter_name,
+        input_size,
+        down_sample,
+        config: AdapterConfig,
+        A_fun,
+        a_fun,
+        xis,
+        model_device,
+        seed=0
+    ):
+        super().__init__()
+        self.name = adapter_name
+        self.input_size = input_size
+        self.add_layer_norm_before = config["ln_before"]
+        self.add_layer_norm_after = config["ln_after"]
+        self.adapter_residual_before_ln = config["adapter_residual_before_ln"]
+        self.use_gating = config["use_gating"]
+        self.A_fun = A_fun
+        self.a_fun = a_fun
+        self.xis = xis
+        self.model_device = model_device
+        self.seed = seed
+
+        # Params related to input & output of adapter
+        self.residual_before_ln = config["residual_before_ln"]
+        self.original_ln_before = config["original_ln_before"]
+        self.original_ln_after = config["original_ln_after"]
+        print(config['phm_layer'])
+
+        # list for all modules of the adapter, passed into nn.Sequential()
+        seq_list = []
+
+        # If we want to have a layer norm on input, we add it to seq_list
+        if self.add_layer_norm_before:
+            self.adapter_norm_before = nn.LayerNorm(self.input_size)
+            seq_list.append(self.adapter_norm_before)
+
+        # if a downsample size is not passed, we just half the size of the original input
+        self.down_sample = down_sample
+        if down_sample is None:
+            self.down_sample = self.input_size // 2
+
+        # ensure that the down sample size is at least 1
+        if self.down_sample < 1:
+            self.down_sample = 1
+
+        if config["phm_layer"] is True:
+            # Linear down projection of the input
+            raise NotImplementedError('Compacter modules are not implemented.')
+        else:
+            initial_weights = torch.rand(self.down_sample, self.input_size).to(self.model_device)
+            seq_list.append(NNK(initial_weights, self.A_fun, self.a_fun, self.xis, self.down_sample, self.input_size, self.model_device, self.seed))
+
+        # select proper linearization based on activation functions
+        #TODO : Ask
+        # sequential adapter, first downproject, then non-linearity then upsample. In the forward pass we include the
+        # residual connection
+        self.adapter_down = nn.Sequential(*seq_list)
+
+        # Up projection to input size
+        if config["phm_layer"] is True:
+            # Linear down projection of the input
+            raise NotImplementedError('Compacter modules are not implemented.')
+        else:
+            self.adapter_up = nn.Linear(self.down_sample, self.input_size)
+
+        # Additional scaling factor (from He et al. (2021))
+        print(config["scaling"])
+        if isinstance(config["scaling"], float):
+            self.scaling = config["scaling"]
+        elif config["scaling"] == "learned":
+            self.scaling = nn.Parameter(torch.ones(1))
+        else:
+            raise ValueError("Unknown scaling type: {}".format(config["scaling"]))
+
+        # If we want to have a layer norm on output, we apply it later after a separate residual connection
+        # This means that we learn a new output layer norm, which replaces another layer norm learned in the bert layer
+        if self.add_layer_norm_after:
+            self.adapter_norm_after = nn.LayerNorm(self.input_size)
+
+        if self.use_gating:
+            self.gate = nn.Linear(self.input_size, 1)
+
+        # if we want to initialize with the bert strategy then this function is called for all the linear layers
+        if config["init_weights"] == "bert":
+            self.adapter_down.apply(self.init_bert_weights)
+            self.adapter_up.apply(self.init_bert_weights)
+            if self.use_gating:
+                self.gate.apply(self.init_bert_weights)
+        elif config["init_weights"] == "mam_adapter":
+            with torch.no_grad():
+                nn.init.kaiming_uniform_(self.adapter_down[0].input_weights, a=math.sqrt(5))
+                nn.init.zeros_(self.adapter_up.weight)
+                nn.init.zeros_(self.adapter_up.bias)
+                if self.use_gating:
+                    self.gate.apply(self.init_bert_weights)
+        else:
+            raise ValueError("Unknown init_weights type: {}".format(config["init_weights"]))
+
+  def pre_forward(
+        self,
+        hidden_states,
+        input_tensor,
+        layer_norm,
+        fusion_config=None,
+    ):
+        """
+        Retrieves the hidden_states, query (for Fusion), and residual connection according to the set configuration.
+
+        Args:
+            adapter_config: config file according to what the parameters are passed
+            hidden_states: output of previous layer
+            input_tensor: residual connection before FFN
+
+        Returns: hidden_states, query, residual
+
+        """
+        query = None
+
+        if self.residual_before_ln:
+            residual = hidden_states
+
+        if fusion_config is not None and fusion_config["query_before_ln"]:
+            query = hidden_states
+
+        if self.original_ln_before:
+            if layer_norm:
+                hidden_states = layer_norm(hidden_states + input_tensor)
+            else:
+                hidden_states = hidden_states + input_tensor
+
+        if not self.residual_before_ln:
+            residual = hidden_states
+
+        if fusion_config is not None and not fusion_config["query_before_ln"]:
+            query = hidden_states
+
+        return hidden_states, query, residual
+
+  def forward(self, x, residual_input, output_gating=False):
+        down = self.adapter_down(x)
+
+        up = self.adapter_up(down)
+        up = up * self.scaling
+        output = up
+
+        if self.use_gating:
+            # x.shape = (batch_size, seq_len, hidden_size)
+            gate = torch.sigmoid(self.gate(x))
+            gate = torch.mean(gate, dim=1).unsqueeze(-1)
+            output = output * gate
+
+        # apply residual connection before layer norm if configured in this way
+        if self.adapter_residual_before_ln:
+            output = output + residual_input
+
+        # apply layer norm if available
+        if self.add_layer_norm_after:
+            output = self.adapter_norm_after(output)
+
+        # if residual should be applied after layer norm, apply it here
+        if not self.adapter_residual_before_ln:
+            output = output + residual_input
+
+        if self.use_gating and output_gating:
+            return output, down, up, gate
+        return output, down, up
+
+  def post_forward(self, hidden_states, input_hidden_states, input_tensor, layer_norm):
+        """
+        Performs computations after the forward pass of the adapter block(s). This e.g. includes applying the residual
+        connection and layer norm if configured in this way.
+
+        Args:
+            hidden_states: The hidden states outputted by the adapter block(s).
+            input_hidden_states: Residual connection before the adapter block(s).
+            input_tensor: Residual connection before the Transformer FFN/ attention layer.
+            layer_norm: Transformer LayerNorm.
+
+        Returns:
+            The modified hidden states.
+        """
+        if self.original_ln_after:
+            if layer_norm:
+                hidden_states = layer_norm(hidden_states + input_tensor)
+            else:
+                hidden_states = hidden_states + input_tensor
+
+        return hidden_states
+
+    # This is copied from the BertPreTrainedModel class to make this a self containing class.
+  @staticmethod
+  def init_bert_weights(module):
+        """Initialize the weights."""
+        if isinstance(module, (nn.Linear, nn.Embedding)):
+            # std defaults to 0.02, this might need to be changed
+            module.weight.data.normal_(mean=0.0, std=0.02)
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+        if isinstance(module, nn.Linear) and module.bias is not None:
+            module.bias.data.zero_()
+        if isinstance(module, NNK):
+          module.input_weights.data.normal_(mean=0.0, std=0.02)
+
