@@ -591,8 +591,8 @@ class LinearAdapterLayer(AdapterLayer):
         self.model_device = model_device
         self.seed = seed
 
-    # def _init_adapter_modules(self):
-    #     self.adapters = nn.ModuleDict(dict())
+    def _init_adapter_modules(self):
+        self.linearized_adapters = nn.ModuleDict(dict())
     #     self.adapter_fusion_layer = nn.ModuleDict(dict())
 
     def add_adapter(self, adapter_name: str, layer_idx: int):
