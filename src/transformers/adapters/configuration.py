@@ -329,6 +329,26 @@ class CompacterConfig(HoulsbyConfig):
     reduction_factor: Union[float, Mapping] = 32
     non_linearity: str = "gelu"
 
+@dataclass(eq=False)
+class NNKConfig(AdapterConfig):
+    """
+    The adapter architecture proposed by Houlsby et al. (2019). See https://arxiv.org/pdf/1902.00751.pdf.
+    """
+
+    original_ln_before: bool = False
+    original_ln_after: bool = True
+    residual_before_ln: bool = True
+    adapter_residual_before_ln: bool = False
+    ln_before: bool = False
+    ln_after: bool = False
+    mh_adapter: bool = True
+    output_adapter: bool = True
+    non_linearity: str = "cos"
+    reduction_factor: Union[float, Mapping] = 16
+    phm_layer: bool = False
+    scaling: Union[float, str] = 1.0
+    init_weights: str = 'mam_adapter'
+    
 
 @dataclass(eq=False)
 class HoulsbyInvConfig(HoulsbyConfig):

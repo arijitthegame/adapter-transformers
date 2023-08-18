@@ -574,3 +574,63 @@ class AdapterLayer(AdapterLayerBase, nn.Module):
             torch.Tensor: Output hidden states of the adapter layer.
         """
         return self.adapter_layer_forward(hidden_states, residual_input, layer_norm)
+
+
+class LinearAdapterLayer(AdapterLayer):
+    def __init__(self, location_key: str, config,  A_fun,
+        a_fun,
+        xis,
+        model_device,
+        seed=0):
+        super().__init__()
+        self.location_key = location_key
+        self.config = config
+        self.A_fun = A_fun
+        self.a_fun = a_fun
+        self.xis = xis
+        self.model_device = model_device
+        self.seed = seed
+
+    def _init_adapter_modules(self):
+        self.linearized_adapters = nn.ModuleDict(dict())
+    #     self.adapter_fusion_layer = nn.ModuleDict(dict())
+
+    def add_adapter(self, adapter_name: str, layer_idx: int):
+        self.layer_idx = layer_idx
+        adapter_config = self.config.adapters.match(
+            adapter_name,
+            config_type=AdapterConfig,
+            layer_idx=self.layer_idx,
+            location_key=self.location_key,
+        )
+        if adapter_config is not None:
+            reduction_factor = adapter_config["reduction_factor"]
+            if isinstance(reduction_factor, Mapping):
+                if str(self.layer_idx) in reduction_factor:
+                    reduction_factor = reduction_factor[str(self.layer_idx)]
+                elif "default" in reduction_factor:
+                    reduction_factor = reduction_factor["default"]
+                else:
+                    raise KeyError(
+                        "The given reduction factor mapping does not give a default value and does not specify each "
+                        "reduction factor individually. You need to provide a default value like this: "
+                        '{"1": 16, "default": 16}'
+                    )
+
+            if adapter_config.is_parallel:
+                raise ValueError('Parallel adapters are not supported')
+            else:
+                adapter_class = LinearAdapter
+            adapter = adapter_class(
+                adapter_name=adapter_name,
+                input_size=self.config.hidden_size,
+                down_sample=int(self.config.hidden_size // reduction_factor),
+                config=adapter_config,
+                A_fun=self.A_fun,
+                a_fun=self.a_fun,
+                xis=self.xis,
+                model_device=self.model_device,
+                seed=self.seed
+            )
+            adapter.train(self.training)  # make sure training mode is consistent
+            self.adapters[adapter_name] = adapter
